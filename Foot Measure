@@ -11,6 +11,7 @@ using namespace std;
 
 class FootMeasure
 {
+	//PRIVATE VARIABLES
 	Mat src;
 	const double QUARTER_DIAMETER = 23.81;
 	double pixel_to_mm;
