@@ -1,0 +1,172 @@
+//ASSUMPTIONS: THE IMAGE IS TAKEN FROM A TOP VIEW WITH THE FOOT CENTERED IN THE FRAME
+//THE BACKGROUND OF THE IMAGE IS PLAIN AND A DIFFERENT COLOUR FROM THE SKING
+//THE IMAGE IS ORIENTED IN LANDSCAPE AND THERE IS A QUARTER ON THE FLOOR TO THE LEFT OF THE FOOT
+
+
+#include <opencv2/opencv.hpp>
+#include <iostream>;
+
+using namespace cv;
+using namespace std;
+
+class FootMeasure
+{
+	Mat src;
+	const double QUARTER_DIAMETER = 23.81;
+	double pixel_to_mm;
+	vector<vector<Point>> contours;
+	vector<vector<Point> > contours_poly;
+	vector<Rect> boundRect;
+	int foot_length;
+public:
+	FootMeasure(String filename)
+	{
+		//SOURCE IMAGE
+		string image_path = samples::findFile(filename);
+		src = imread(image_path, IMREAD_COLOR);
+
+		//VERIFY IMAGE EXISTS
+		if (src.empty())
+		{
+			cout << "Could not read the image" << endl;
+		}
+	}
+  
+  //HELPER FUNCTION TO MEASURE THE REFERENCE OBJECT AND DETERMINE PIXEL TO MM RATIO
+	void reference_measure()
+	{
+		find_contours();
+
+		//VARIABLE FOR THE COIN FOR REFERENCE
+		Rect reference_coin = boundRect[0];
+
+		//COIN WILL BE THE ONE TO THE FARTHEST LEFT
+		for (size_t i = 1; i < boundRect.size(); i++)
+		{
+			if (boundRect[i].tl().x < reference_coin.tl().x)
+				reference_coin = boundRect[i];
+		}
+
+		//DIAMETER OF THE COIN IN PIXELS
+		int diameter = reference_coin.width;
+
+		//DETERMINE PIXEL TO MM RATIO
+		pixel_to_mm = QUARTER_DIAMETER / diameter;
+
+	}
+  
+  //HELPER FUNCTION TO FIND ALL THE CONTOURS IN THE IMAGE
+	void find_contours()
+	{
+		//CONVERT IMAGE TO GRAYSCALE
+		Mat img_gray;
+		cvtColor(src, img_gray, COLOR_BGR2GRAY);
+		//BLUR TO REMOVE NOISE AND THEN FIND TH EDGES IN THE IMAGE
+		blur(img_gray, img_gray, Size(3, 3));
+		Canny(img_gray, img_gray, 0, 75);
+
+		//FIND CONTOURS USING THE EDGES FOUND
+		findContours(img_gray, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
+		//DRAW BOUNDING BOXES
+		for (size_t i = 0; i < contours.size(); i++)
+		{
+			approxPolyDP(contours[i], contours_poly[i], 3, true);
+			boundRect[i] = boundingRect(contours_poly[i]);
+		}
+	}
+  
+  //METHOD ONE OF FINDING FOOT SIZE, USING CONTOURS TO DETERMINE SIZE
+	void contour_measure()
+	{
+		reference_measure();
+
+		//VARIABLE FOR THE FOOT
+		Rect foot = boundRect[0];
+
+		//FOOT WILL BE THE BIGGEST BOX 
+		for (size_t i = 1; i < boundRect.size(); i++)
+		{
+			if (boundRect[i].width > foot.width)
+				foot = boundRect[i];
+		}
+
+		//FIND FOOT LENGT USING RATIO AND WIDTH OF FOOT CONTOUR BOUNDING BOX
+		foot_length = foot.width * pixel_to_mm;
+		cout << "Countour Measurment: " << foot_length << "mm" << endl;
+	}
+  
+  //METHOD TWO TOF FINDING FOOT SIZE, USING SKIN DETETCION TO DETERMINE SIZE
+	void skin_detect_measure()
+	{
+		reference_measure();
+
+		//SELECT A PORTION OF THE FOOT THAT IS ONLE SKIN ASSUMING FOOT IS CENTERED IN IMAGE
+		Rect roi(src.size().width / 2 - 100, src.size().height / 2 - 100, 200, 200);
+		Mat img_roi(src, roi);
+		Mat roi_hsv, img_hsv;
+
+		//VARIABLES FOR HSV VALUES
+		int minH = 255, minS = 255, minV = 255;
+		int maxH = 0, maxS = 0, maxV = 0;
+
+		//FIND RANGE OF HSV VALUES FOR THE SKIN USING PORTION OF THE IMAGE THAT IS ONLY SKIN
+		cvtColor(img_roi, roi_hsv, COLOR_BGR2HSV);
+		for (int j = 0; j < roi_hsv.cols; j++)
+		{
+			for (int i = 0; i < roi_hsv.rows; i++)
+			{
+				if (roi_hsv.at<Vec3b>(Point(j, i))[0] < minH)
+					minH = roi_hsv.at<Vec3b>(Point(j, i))[0];
+				if (roi_hsv.at<Vec3b>(Point(j, i))[1] < minS)
+					minS = roi_hsv.at<Vec3b>(Point(j, i))[1];
+				if (roi_hsv.at<Vec3b>(Point(j, i))[2] < minV)
+					minV = roi_hsv.at<Vec3b>(Point(j, i))[2];
+				if (roi_hsv.at<Vec3b>(Point(j, i))[0] > maxH)
+					maxH = roi_hsv.at<Vec3b>(Point(j, i))[0];
+				if (roi_hsv.at<Vec3b>(Point(j, i))[1] > maxS)
+					maxS = roi_hsv.at<Vec3b>(Point(j, i))[1];
+				if (roi_hsv.at<Vec3b>(Point(j, i))[2] > maxV)
+					maxV = roi_hsv.at<Vec3b>(Point(j, i))[2];
+
+			}
+		}
+
+		//USE THAT RANGE TO DETECT SKIN IN THE IMAGE
+		cvtColor(src, img_hsv, COLOR_BGR2HSV);
+		Mat bw;
+		inRange(img_hsv, Scalar(minH, minS, minV), Scalar(maxH, maxS, maxV), bw);
+
+		//FIND THE FARTHEST LEFT SKIN PIXEL AND THE FARTHEST RIGHT SKIN PIXEL
+		Point left = Point(5000, 0);
+		Point right = Point(0, 0);
+		for (int j = 0; j < bw.cols; j++)
+		{
+			for (int i = 0; i < bw.rows; i++)
+			{
+				Scalar intensity = bw.at<uchar>(Point(j, i));
+				if (intensity[0] == 255)
+				{
+					if (i > (bw.rows / 2))
+					{
+						if (j < left.x)
+							left = Point(j, i);
+						if (j > right.x)
+							right = Point(j, i);
+					}
+				}
+			}
+		}
+
+		//SUBRTRACT PIXELS TO FIND LENGTH AND USE PIXEL TO MM RATIO FROM COIN CONTOUR TO DETERMINE LENGTH
+		foot_length = (right.x - left.x) * pixel_to_mm;
+		cout << "Skin Detection Measurement: " << foot_length << "mm" << endl;
+	}
+};
+
+int main()
+{
+	FootMeasure demo = FootMeasure("feet_picsT.jpg");
+	demo.contour_measure();
+	demo.skin_detect_measure();
+}
